@@ -31,9 +31,8 @@ if st.session_state.usuario_logado is None:
             
             if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 senha_banco = usuario_selecionado.get('senha')
-                senha_mestre = st.secrets.get("SENHA_UNIVERSAL")
+                senha_mestre = st.secrets.get("SENHA_UNIVERSAL", "wiclef2026") # Plano B seguro
                 
-                # Passa se digitar a senha correta da pessoa OU a chave mestra
                 if (senha_banco and senha_digitada == senha_banco) or senha_digitada == senha_mestre:
                     st.session_state.usuario_logado = usuario_selecionado
                     st.rerun()
@@ -73,7 +72,6 @@ else:
     todas_contas = supabase.table("acertos_cartao").select("*").eq("dependente_id", usuario['id']).execute().data
     lista_ganhos = supabase.table("ganhos").select("*").eq("dependente_id", usuario['id']).execute().data
 
-# Filtra contas pendentes para o Dashboard
 contas_pendentes = [c for c in todas_contas if c['status'] == 'Pendente']
 id_para_nome = {p['id']: p['nome'] for p in lista_dependentes}
 
@@ -177,7 +175,7 @@ with aba_dash:
             if st.button("Ver Detalhes", key=f"btn_detalhes_{id_pessoa}", use_container_width=True):
                 mostrar_detalhes(id_pessoa, nome, data_inicio, data_fim)
 
-# --- ABA 2: EXTRATO COMPLETO ---
+# --- ABA 2: EXTRATO COMPLETO (COM PROTEÇÃO DE NULOS) ---
 with aba_extrato:
     st.subheader("📄 Extrato Financeiro")
     st.write(f"**Período:** {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}")
@@ -220,7 +218,8 @@ with aba_extrato:
     if ganhos_extrato:
         df_ganhos = pd.DataFrame(ganhos_extrato)
         df_ganhos['Membro'] = df_ganhos['dependente_id'].map(id_para_nome)
-        df_ganhos['Data'] = df_ganhos.apply(lambda x: (x.get('data_recebimento') or x.get('data_registro'))[:10], axis=1)
+        # Proteção contra erros Type Error (Transforma Nulo numa data padrão segura)
+        df_ganhos['Data'] = df_ganhos.apply(lambda x: str(x.get('data_recebimento') or x.get('data_registro') or hoje.isoformat())[:10], axis=1)
         df_ganhos['Data'] = pd.to_datetime(df_ganhos['Data']).dt.strftime('%d/%m/%Y')
         df_g_show = df_ganhos[['Data', 'Membro', 'descricao', 'frequencia', 'valor']].copy()
         df_g_show.columns = ['Data', 'Membro', 'Descrição', 'Frequência', 'Valor (R$)']
@@ -232,7 +231,7 @@ with aba_extrato:
     if contas_extrato:
         df_contas = pd.DataFrame(contas_extrato)
         df_contas['Membro'] = df_contas['dependente_id'].map(id_para_nome)
-        df_contas['Data'] = df_contas['data_vencimento'].str[:10]
+        df_contas['Data'] = df_contas['data_vencimento'].apply(lambda x: str(x)[:10] if pd.notnull(x) else hoje.isoformat()[:10])
         df_contas['Data'] = pd.to_datetime(df_contas['Data']).dt.strftime('%d/%m/%Y')
         df_c_show = df_contas[['Data', 'Membro', 'descricao', 'status', 'valor']].copy()
         df_c_show.columns = ['Vencimento', 'Membro', 'Descrição', 'Status', 'Valor (R$)']
@@ -240,9 +239,15 @@ with aba_extrato:
     else:
         st.info("Nenhuma dívida neste período.")
 
-# --- ABA 3: NOVA DÍVIDA ---
+# --- ABA 3: NOVA DÍVIDA (INTERATIVA E COM RESET) ---
 with aba_divida:
     st.subheader("🧾 Registrar Dívida")
+    
+    # 1. Mostra a mensagem de sucesso que sobreviveu ao recarregamento da página
+    if 'msg_sucesso_divida' in st.session_state:
+        st.success(st.session_state.msg_sucesso_divida)
+        del st.session_state.msg_sucesso_divida # Apaga para não aparecer de novo
+
     def adicionar_meses(data_orig, meses):
         mes = data_orig.month - 1 + meses
         ano = data_orig.year + mes // 12
@@ -250,79 +255,74 @@ with aba_divida:
         dia = min(data_orig.day, [31,29 if ano%4==0 and not ano%400==0 else 28,31,30,31,30,31,31,30,31,30,31][mes-1])
         return date(ano, mes, dia)
 
-    with st.form("form_inserir"):
-        # Verificação de perfil
-        if usuario.get('perfil') == 'admin':
-            tipo_conta = st.radio("Conta:", ["Individual", "Compartilhada"])
-            quem_paga = st.selectbox("Quem fez a compra?", [p["nome"] for p in lista_dependentes])
-        else:
-            tipo_conta = "Individual"
-            quem_paga = usuario['nome']
-            st.info(f"Registando Dívida Individual para: **{quem_paga}**")
-            
-        descricao = st.text_input("O que foi comprado?")
-        valor_parcela = st.number_input("Valor Total da Parcela (R$):", min_value=0.0)
+    if usuario.get('perfil') == 'admin':
+        tipo_conta = st.radio("Conta:", ["Individual", "Compartilhada"], key="div_tipo")
+        quem_paga = st.selectbox("Quem fez a compra?", [p["nome"] for p in lista_dependentes], key="div_quem")
+    else:
+        tipo_conta = "Individual"
+        quem_paga = usuario['nome']
+        st.info(f"Registando Dívida Individual para: **{quem_paga}**")
         
-        # --- NOVO BLOCO: DIVISÃO DA CONTA COMPARTILHADA ---
-        divisoes = {}
-        if tipo_conta == "Compartilhada":
-            st.markdown("#### ⚖️ Divisão da Conta (%)")
-            st.caption("A soma de todos deve dar 100%. O sistema calculará os valores automaticamente.")
-            colunas_div = st.columns(len(lista_dependentes))
-            
-            # Calcula a porcentagem igual para todos (ex: 100 / 5 = 20%)
-            pct_padrao = 100.0 / len(lista_dependentes)
-            
-            for idx, p in enumerate(lista_dependentes):
-                with colunas_div[idx]:
-                    divisoes[p['id']] = st.number_input(f"{p['nome']}", min_value=0.0, max_value=100.0, value=pct_padrao, step=1.0)
-        # ----------------------------------------------------
-                    
-        col_data1, col_data2 = st.columns(2)
-        with col_data1: is_parcelado = st.checkbox("É parcelado?")
-        with col_data2: qtd_parcelas = st.number_input("Vezes:", min_value=2, value=2) if is_parcelado else 1
-        data_vencimento = st.date_input("Vencimento 1ª Parcela:", value=hoje)
+    # Adicionamos 'key' aos inputs para podermos limpá-los depois
+    descricao = st.text_input("O que foi comprado?", key="div_desc")
+    valor_parcela = st.number_input("Valor Total da Parcela (R$):", min_value=0.0, key="div_val")
+    
+    divisoes = {}
+    if tipo_conta == "Compartilhada":
+        st.markdown("#### ⚖️ Divisão da Conta (%)")
+        st.caption("A soma de todos deve dar 100%. O sistema calculará os valores automaticamente.")
+        colunas_div = st.columns(len(lista_dependentes))
+        pct_padrao = 100.0 / len(lista_dependentes) if len(lista_dependentes) > 0 else 100.0
         
-        if st.form_submit_button("Salvar Conta", type="primary"):
-            
-            # Trava de segurança: impede salvar se a soma não for 100%
-            if tipo_conta == "Compartilhada" and abs(sum(divisoes.values()) - 100.0) > 0.1:
-                st.error(f"❌ A soma das porcentagens deve ser 100%! Atualmente está em {sum(divisoes.values()):.1f}%.")
-            else:
-                id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_paga)
-                pacote = []
+        for idx, p in enumerate(lista_dependentes):
+            with colunas_div[idx]:
+                divisoes[p['id']] = st.number_input(f"{p['nome'][:6]}", min_value=0.0, max_value=100.0, value=pct_padrao, step=1.0, key=f"div_pct_{p['id']}")
                 
-                for i in range(qtd_parcelas):
-                    venc = adicionar_meses(data_vencimento, i)
-                    mes_ref = f"{venc.month:02d}/{venc.year}"
+    col_data1, col_data2 = st.columns(2)
+    with col_data1: is_parcelado = st.checkbox("É parcelado?", key="div_parc")
+    with col_data2: 
+        if is_parcelado:
+            qtd_parcelas = st.number_input("Vezes:", min_value=2, value=2, key="div_qtd")
+        else:
+            qtd_parcelas = 1
+            
+    data_vencimento = st.date_input("Vencimento 1ª Parcela:", value=hoje, key="div_venc")
+    
+    if st.button("Salvar Conta", type="primary"):
+        if tipo_conta == "Compartilhada" and abs(sum(divisoes.values()) - 100.0) > 0.1:
+            st.error(f"❌ A soma das porcentagens deve ser 100%! Atualmente está em {sum(divisoes.values()):.1f}%.")
+        elif not descricao or valor_parcela <= 0:
+            st.warning("⚠️ Preencha a descrição e o valor antes de salvar!")
+        else:
+            id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_paga)
+            pacote = []
+            for i in range(qtd_parcelas):
+                venc = adicionar_meses(data_vencimento, i)
+                mes_ref = f"{venc.month:02d}/{venc.year}"
+                
+                if tipo_conta == "Individual":
+                    pacote.append({"dependente_id": id_pessoa, "descricao": f"{descricao} ({i+1}/{qtd_parcelas})", "valor": valor_parcela, "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": "Pendente"})
+                elif tipo_conta == "Compartilhada":
+                    for p_id, pct in divisoes.items():
+                        if pct > 0:
+                            pacote.append({"dependente_id": p_id, "descricao": f"{descricao} - Comp. ({i+1}/{qtd_parcelas})", "valor": round(valor_parcela * (pct / 100.0), 2), "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": "Pendente"})
+                            
+            # 1. Guarda no banco
+            supabase.table("acertos_cartao").insert(pacote).execute()
+            
+            # 2. Guarda a mensagem na memória para mostrar após o reset
+            st.session_state.msg_sucesso_divida = "✅ Conta salva com sucesso!"
+            
+            # 3. Força a limpeza de todos os campos digitados
+            chaves_para_limpar = ["div_desc", "div_val", "div_parc", "div_qtd", "div_venc", "div_tipo", "div_quem"]
+            for p in lista_dependentes: chaves_para_limpar.append(f"div_pct_{p['id']}")
+            
+            for chave in chaves_para_limpar:
+                if chave in st.session_state:
+                    del st.session_state[chave]
                     
-                    if tipo_conta == "Individual":
-                        pacote.append({
-                            "dependente_id": id_pessoa, 
-                            "descricao": f"{descricao} ({i+1}/{qtd_parcelas})", 
-                            "valor": valor_parcela, 
-                            "mes": mes_ref, 
-                            "data_vencimento": venc.isoformat(), 
-                            "status": "Pendente"
-                        })
-                        
-                    elif tipo_conta == "Compartilhada":
-                        # Multiplica a dívida e cria um registo separado para cada membro
-                        for p_id, pct in divisoes.items():
-                            if pct > 0:
-                                valor_fracionado = valor_parcela * (pct / 100.0)
-                                pacote.append({
-                                    "dependente_id": p_id, 
-                                    "descricao": f"{descricao} - Comp. ({i+1}/{qtd_parcelas})", 
-                                    "valor": round(valor_fracionado, 2), 
-                                    "mes": mes_ref, 
-                                    "data_vencimento": venc.isoformat(), 
-                                    "status": "Pendente"
-                                })
-                                
-                supabase.table("acertos_cartao").insert(pacote).execute()
-                st.success("Conta salva e dividida com sucesso!")
-                st.rerun()
+            # 4. Recarrega a tela de forma limpa
+            st.rerun()
 
 # --- ABA 4: NOVO GANHO ---
 with aba_ganho:
@@ -383,7 +383,7 @@ with aba_perfil:
         confirma_senha = st.text_input("Confirme a Nova Senha:", type="password")
         
         if st.form_submit_button("Mudar Senha", type="primary"):
-            if senha_atual != usuario.get('senha', '123456'): st.error("A senha atual está incorreta!")
+            if senha_atual != usuario.get('senha'): st.error("A senha atual está incorreta!")
             elif nova_senha != confirma_senha: st.error("As novas senhas não coincidem!")
             elif len(nova_senha) < 4: st.error("A nova senha deve ter pelo menos 4 caracteres.")
             else:
@@ -394,31 +394,68 @@ with aba_perfil:
 # --- ABAS RESTRITAS APENAS PARA ADMIN ---
 if usuario.get('perfil') == 'admin':
     with aba_editar:
-        st.subheader("✏️ Editar Histórico")
+        st.subheader("✏️ Editar ou Excluir Histórico")
         sub_d, sub_g = st.tabs(["🔴 Dívidas", "🟢 Ganhos"])
+        
         with sub_d:
-            if contas_pendentes:
+            if todas_contas:
                 with st.form("form_edit_d"):
-                    d_sel = st.selectbox("Conta:", contas_pendentes, format_func=lambda c: f"{id_para_nome.get(c['dependente_id'])} | {c['descricao']} | R$ {c['valor']}")
+                    # Agora puxa todas_contas para permitir apagar até as que já foram pagas
+                    d_sel = st.selectbox("Selecione a Conta:", todas_contas, format_func=lambda c: f"{id_para_nome.get(c['dependente_id'])} | {c['descricao']} | R$ {c['valor']} | Status: {c['status']}")
+                    
                     n_desc = st.text_input("Descrição:", value=d_sel['descricao'])
-                    n_val = st.number_input("Valor:", min_value=0.0, value=float(d_sel['valor']))
-                    n_venc = st.date_input("Vencimento:", value=datetime.strptime(d_sel.get('data_vencimento', hoje.isoformat())[:10], '%Y-%m-%d').date())
-                    if st.form_submit_button("Atualizar", type="primary"):
+                    n_val = st.number_input("Valor (R$):", min_value=0.0, value=float(d_sel['valor']))
+                    
+                    # Proteção para datas nulas
+                    venc_atual = d_sel.get('data_vencimento')
+                    data_padrao = datetime.strptime(venc_atual[:10], '%Y-%m-%d').date() if venc_atual else hoje
+                    n_venc = st.date_input("Vencimento:", value=data_padrao)
+                    
+                    col_btn1, col_btn2 = st.columns(2)
+                    with col_btn1:
+                        btn_atualizar = st.form_submit_button("Atualizar Conta", type="primary", use_container_width=True)
+                    with col_btn2:
+                        btn_excluir = st.form_submit_button("❌ Excluir Conta", use_container_width=True)
+                        
+                    if btn_atualizar:
                         supabase.table("acertos_cartao").update({"descricao": n_desc, "valor": n_val, "data_vencimento": n_venc.isoformat()}).eq("id", d_sel['id']).execute()
-                        st.success("Atualizado!"); st.rerun()
-            else: st.info("Nada para editar.")
-            
+                        st.success("Conta atualizada com sucesso!")
+                        st.rerun()
+                    elif btn_excluir:
+                        supabase.table("acertos_cartao").delete().eq("id", d_sel['id']).execute()
+                        st.warning("Conta excluída permanentemente!")
+                        st.rerun()
+            else: 
+                st.info("Nenhuma dívida registada para editar.")
+                
         with sub_g:
             if lista_ganhos:
                 with st.form("form_edit_g"):
-                    g_sel = st.selectbox("Ganho:", lista_ganhos, format_func=lambda g: f"{id_para_nome.get(g['dependente_id'])} | {g['descricao']} | R$ {g['valor']}")
+                    g_sel = st.selectbox("Selecione o Ganho:", lista_ganhos, format_func=lambda g: f"{id_para_nome.get(g['dependente_id'])} | {g['descricao']} | R$ {g['valor']}")
+                    
                     n_desc_g = st.text_input("Descrição:", value=g_sel['descricao'])
-                    n_val_g = st.number_input("Valor:", min_value=0.0, value=float(g_sel['valor']))
-                    n_venc_g = st.date_input("Previsto para:", value=datetime.strptime((g_sel.get('data_recebimento') or g_sel.get('data_registro'))[:10], '%Y-%m-%d').date())
-                    if st.form_submit_button("Atualizar", type="primary"):
+                    n_val_g = st.number_input("Valor (R$):", min_value=0.0, value=float(g_sel['valor']))
+                    
+                    reg_atual = g_sel.get('data_recebimento') or g_sel.get('data_registro')
+                    data_padrao_g = datetime.strptime(reg_atual[:10], '%Y-%m-%d').date() if reg_atual else hoje
+                    n_venc_g = st.date_input("Previsto para:", value=data_padrao_g)
+                    
+                    col_btn3, col_btn4 = st.columns(2)
+                    with col_btn3:
+                        btn_atualizar_g = st.form_submit_button("Atualizar Ganho", type="primary", use_container_width=True)
+                    with col_btn4:
+                        btn_excluir_g = st.form_submit_button("❌ Excluir Ganho", use_container_width=True)
+                        
+                    if btn_atualizar_g:
                         supabase.table("ganhos").update({"descricao": n_desc_g, "valor": n_val_g, "data_recebimento": n_venc_g.isoformat()}).eq("id", g_sel['id']).execute()
-                        st.success("Atualizado!"); st.rerun()
-            else: st.info("Nada para editar.")
+                        st.success("Ganho atualizado com sucesso!")
+                        st.rerun()
+                    elif btn_excluir_g:
+                        supabase.table("ganhos").delete().eq("id", g_sel['id']).execute()
+                        st.warning("Ganho excluído permanentemente!")
+                        st.rerun()
+            else: 
+                st.info("Nenhum ganho registado para editar.")
 
     with aba_familia:
         st.subheader("👨‍👩‍👧 Gerenciar Acessos")
