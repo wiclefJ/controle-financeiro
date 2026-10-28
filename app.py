@@ -251,6 +251,7 @@ with aba_divida:
         return date(ano, mes, dia)
 
     with st.form("form_inserir"):
+        # Verificação de perfil
         if usuario.get('perfil') == 'admin':
             tipo_conta = st.radio("Conta:", ["Individual", "Compartilhada"])
             quem_paga = st.selectbox("Quem fez a compra?", [p["nome"] for p in lista_dependentes])
@@ -260,22 +261,68 @@ with aba_divida:
             st.info(f"Registando Dívida Individual para: **{quem_paga}**")
             
         descricao = st.text_input("O que foi comprado?")
-        valor_parcela = st.number_input("Valor da Parcela (R$):", min_value=0.0)
+        valor_parcela = st.number_input("Valor Total da Parcela (R$):", min_value=0.0)
+        
+        # --- NOVO BLOCO: DIVISÃO DA CONTA COMPARTILHADA ---
+        divisoes = {}
+        if tipo_conta == "Compartilhada":
+            st.markdown("#### ⚖️ Divisão da Conta (%)")
+            st.caption("A soma de todos deve dar 100%. O sistema calculará os valores automaticamente.")
+            colunas_div = st.columns(len(lista_dependentes))
+            
+            # Calcula a porcentagem igual para todos (ex: 100 / 5 = 20%)
+            pct_padrao = 100.0 / len(lista_dependentes)
+            
+            for idx, p in enumerate(lista_dependentes):
+                with colunas_div[idx]:
+                    divisoes[p['id']] = st.number_input(f"{p['nome']}", min_value=0.0, max_value=100.0, value=pct_padrao, step=1.0)
+        # ----------------------------------------------------
+                    
         col_data1, col_data2 = st.columns(2)
         with col_data1: is_parcelado = st.checkbox("É parcelado?")
         with col_data2: qtd_parcelas = st.number_input("Vezes:", min_value=2, value=2) if is_parcelado else 1
         data_vencimento = st.date_input("Vencimento 1ª Parcela:", value=hoje)
         
         if st.form_submit_button("Salvar Conta", type="primary"):
-            id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_paga)
-            pacote = []
-            for i in range(qtd_parcelas):
-                venc = adicionar_meses(data_vencimento, i)
-                if tipo_conta == "Individual":
-                    pacote.append({"dependente_id": id_pessoa, "descricao": f"{descricao} ({i+1}/{qtd_parcelas})", "valor": valor_parcela, "mes": f"{venc.month:02d}/{venc.year}", "data_vencimento": venc.isoformat(), "status": "Pendente"})
-            supabase.table("acertos_cartao").insert(pacote).execute()
-            st.success("Conta salva!")
-            st.rerun()
+            
+            # Trava de segurança: impede salvar se a soma não for 100%
+            if tipo_conta == "Compartilhada" and abs(sum(divisoes.values()) - 100.0) > 0.1:
+                st.error(f"❌ A soma das porcentagens deve ser 100%! Atualmente está em {sum(divisoes.values()):.1f}%.")
+            else:
+                id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_paga)
+                pacote = []
+                
+                for i in range(qtd_parcelas):
+                    venc = adicionar_meses(data_vencimento, i)
+                    mes_ref = f"{venc.month:02d}/{venc.year}"
+                    
+                    if tipo_conta == "Individual":
+                        pacote.append({
+                            "dependente_id": id_pessoa, 
+                            "descricao": f"{descricao} ({i+1}/{qtd_parcelas})", 
+                            "valor": valor_parcela, 
+                            "mes": mes_ref, 
+                            "data_vencimento": venc.isoformat(), 
+                            "status": "Pendente"
+                        })
+                        
+                    elif tipo_conta == "Compartilhada":
+                        # Multiplica a dívida e cria um registo separado para cada membro
+                        for p_id, pct in divisoes.items():
+                            if pct > 0:
+                                valor_fracionado = valor_parcela * (pct / 100.0)
+                                pacote.append({
+                                    "dependente_id": p_id, 
+                                    "descricao": f"{descricao} - Comp. ({i+1}/{qtd_parcelas})", 
+                                    "valor": round(valor_fracionado, 2), 
+                                    "mes": mes_ref, 
+                                    "data_vencimento": venc.isoformat(), 
+                                    "status": "Pendente"
+                                })
+                                
+                supabase.table("acertos_cartao").insert(pacote).execute()
+                st.success("Conta salva e dividida com sucesso!")
+                st.rerun()
 
 # --- ABA 4: NOVO GANHO ---
 with aba_ganho:
