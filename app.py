@@ -162,25 +162,39 @@ with aba_dash:
     # 1. SALDO GLOBAL ABSOLUTO (Livre do Filtro de Datas)
     # =======================================================
     st.markdown("<h3><i class='fa-solid fa-building-columns'></i> Caixa Real (Saldo Global)</h3>", unsafe_allow_html=True)
-    st.caption("Dinheiro disponível hoje (Soma de todos os Ganhos - Todas as contas Pagas/Gastos Imediatos).")
+    st.caption("Dinheiro disponível hoje (Ganhos efetivados - Contas Pagas/Gastos Imediatos).")
     
     col_globais = st.columns(len(dependentes_ativos))
     for index, pessoa in enumerate(dependentes_ativos):
         id_p = pessoa['id']
         
-        # Puxa do histórico total (ignorando as datas da barra lateral)
-        ganhos_totais = sum(g['valor'] for g in lista_ganhos if g['dependente_id'] == id_p)
+        # --- NOVO: Separa ganhos reais de previsões futuras ---
+        ganhos_efetivados = 0
+        ganhos_previstos = 0
+        
+        for g in lista_ganhos:
+            if g['dependente_id'] == id_p:
+                data_ganho = datetime.strptime(g['data_recebimento'][:10], '%Y-%m-%d').date() if g.get('data_recebimento') else hoje
+                if data_ganho <= hoje:
+                    ganhos_efetivados += g['valor']
+                else:
+                    ganhos_previstos += g['valor']
+        
         pagos_totais = sum(c['valor'] for c in todas_contas if c['dependente_id'] == id_p and c['status'] == 'Pago')
         
-        saldo_real = ganhos_totais - pagos_totais
+        # Saldo real só considera o que já entrou de fato
+        saldo_real = ganhos_efetivados - pagos_totais
         
         with col_globais[index]:
             st.metric(
                 label=f"💰 {pessoa['nome']}", 
                 value=f"R$ {saldo_real:.2f}", 
-                delta=f"Entrou: {ganhos_totais:.2f} | Saiu: {pagos_totais:.2f}", 
+                delta=f"Entrou: {ganhos_efetivados:.2f} | Saiu: {pagos_totais:.2f}", 
                 delta_color="off"
             )
+            # Mostra a previsão logo abaixo de forma discreta
+            if ganhos_previstos > 0:
+                st.markdown(f"<span style='color: #4CAF50; font-size: 0.85em;'>⏳ Previsão a receber: + R$ {ganhos_previstos:.2f}</span>", unsafe_allow_html=True)
             
     st.divider()
 
@@ -239,7 +253,7 @@ with aba_dash:
     st.divider()
     
     str_inicio = data_inicio.strftime('%d/%m/%Y')
-    
+
 # =======================================================
     # 4. RAIO-X: COMPOSIÇÃO DOS GASTOS
     # =======================================================
@@ -426,24 +440,48 @@ with aba_divida:
 
 # --- ABA 4: NOVO GANHO ---
 with aba_ganho:
-    st.subheader("💰 Registrar Recebimento")
-    with st.form("form_ganhos"):
-        if usuario.get('perfil') == 'admin':
-            quem_recebeu = st.selectbox("Para quem?", [p["nome"] for p in lista_dependentes])
-        else:
-            quem_recebeu = usuario['nome']
-            st.info(f"Registando Ganho para: **{quem_recebeu}**")
-            
-        descricao_ganho = st.text_input("Origem")
-        valor_ganho = st.number_input("Valor (R$)?", min_value=0.0)
-        col_freq, col_data = st.columns(2)
-        with col_freq: frequencia = st.selectbox("Frequência?", ["Mensal", "Quinzenal", "Semanal", "Único"])
-        with col_data: data_recebimento = st.date_input("Data prevista:", value=hoje)
+    st.subheader("💵 Registrar Novo Ganho")
+    
+    if 'msg_sucesso_ganho' in st.session_state:
+        st.success(st.session_state.msg_sucesso_ganho)
+        del st.session_state.msg_sucesso_ganho
         
-        if st.form_submit_button("Salvar Recebimento", type="primary"):
-            id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_recebeu)
-            supabase.table("ganhos").insert({"dependente_id": id_pessoa, "descricao": descricao_ganho, "valor": valor_ganho, "frequencia": frequencia, "data_recebimento": data_recebimento.isoformat()}).execute()
-            st.success("Salvo!")
+    if usuario.get('perfil') == 'admin':
+        quem_ganhou = st.selectbox("Quem recebeu?", [p["nome"] for p in lista_dependentes], key="ganho_quem")
+    else:
+        quem_ganhou = usuario['nome']
+        st.info(f"Registrando ganho para: **{quem_ganhou}**")
+        
+    origem = st.text_input("Origem do Ganho (Ex: Salário, Pix, Venda):", key="ganho_origem")
+    valor_ganho = st.number_input("Valor (R$):", min_value=0.0, key="ganho_valor")
+    data_ganho = st.date_input("Data do Recebimento:", value=hoje, key="ganho_data")
+    
+    # UI inteligente: avisa o usuário se for previsão
+    if data_ganho > hoje:
+        st.info("📅 Como a data é no futuro, este valor entrará como 'Previsão' e só será somado ao Caixa Real no dia exato do recebimento.")
+        
+    if st.button("Salvar Ganho", type="primary"):
+        if not origem or valor_ganho <= 0:
+            st.warning("⚠️ Preencha a origem e um valor maior que zero antes de salvar!")
+        else:
+            id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_ganhou)
+            mes_ref = f"{data_ganho.month:02d}/{data_ganho.year}"
+            
+            supabase.table("ganhos").insert({
+                "dependente_id": id_pessoa,
+                "origem": origem,
+                "valor": valor_ganho,
+                "mes": mes_ref,
+                "data_recebimento": data_ganho.isoformat()
+            }).execute()
+            
+            st.session_state.msg_sucesso_ganho = "✅ Ganho registrado com sucesso!"
+            
+            # Limpeza instantânea
+            for chave in ["ganho_origem", "ganho_valor", "ganho_data", "ganho_quem"]:
+                if chave in st.session_state:
+                    del st.session_state[chave]
+                    
             st.rerun()
 
 # --- ABA 5: PAGAR CONTA (COM COMPROVATIVO) ---
@@ -472,6 +510,44 @@ with aba_pagar:
                 supabase.table("acertos_cartao").update(dados_update).eq("id", conta_escolhida['id']).execute()
                 st.success("Conta Paga!")
                 st.rerun()
+        
+    if usuario.get('perfil') == 'admin':
+        quem_ganhou = st.selectbox("Quem recebeu?", [p["nome"] for p in lista_dependentes], key="ganho_quem")
+    else:
+        quem_ganhou = usuario['nome']
+        st.info(f"Registrando ganho para: **{quem_ganhou}**")
+        
+    origem = st.text_input("Origem do Ganho (Ex: Salário, Pix, Venda):", key="ganho_origem")
+    valor_ganho = st.number_input("Valor (R$):", min_value=0.0, key="ganho_valor")
+    data_ganho = st.date_input("Data do Recebimento:", value=hoje, key="ganho_data")
+    
+    # UI inteligente: avisa o usuário se for previsão
+    if data_ganho > hoje:
+        st.info("📅 Como a data é no futuro, este valor entrará como 'Previsão' e só será somado ao Caixa Real no dia exato do recebimento.")
+        
+    if st.button("Salvar Ganho", type="primary"):
+        if not origem or valor_ganho <= 0:
+            st.warning("⚠️ Preencha a origem e um valor maior que zero antes de salvar!")
+        else:
+            id_pessoa = next(p["id"] for p in lista_dependentes if p["nome"] == quem_ganhou)
+            mes_ref = f"{data_ganho.month:02d}/{data_ganho.year}"
+            
+            supabase.table("ganhos").insert({
+                "dependente_id": id_pessoa,
+                "origem": origem,
+                "valor": valor_ganho,
+                "mes": mes_ref,
+                "data_recebimento": data_ganho.isoformat()
+            }).execute()
+            
+            st.session_state.msg_sucesso_ganho = "✅ Ganho registrado com sucesso!"
+            
+            # Limpeza instantânea
+            for chave in ["ganho_origem", "ganho_valor", "ganho_data", "ganho_quem"]:
+                if chave in st.session_state:
+                    del st.session_state[chave]
+                    
+            st.rerun()
 
 # --- ABA 6: MEU PERFIL (TROCAR SENHA) ---
 with aba_perfil:
