@@ -439,6 +439,7 @@ with aba_divida:
             st.rerun()
 
 # --- ABA 4: NOVO GANHO ---
+# --- ABA 4: NOVO GANHO (COM RESET E VALIDAÇÃO) ---
 with aba_ganho:
     st.subheader("💵 Registrar Novo Ganho")
     
@@ -447,16 +448,17 @@ with aba_ganho:
         del st.session_state.msg_sucesso_ganho
         
     if usuario.get('perfil') == 'admin':
-        quem_ganhou = st.selectbox("Quem recebeu?", [p["nome"] for p in lista_dependentes], key="ganho_quem")
+        # Chave alterada para "novo_ganho_quem" para ser 100% única no código
+        quem_ganhou = st.selectbox("Quem recebeu?", [p["nome"] for p in lista_dependentes], key="novo_ganho_quem")
     else:
         quem_ganhou = usuario['nome']
         st.info(f"Registrando ganho para: **{quem_ganhou}**")
         
-    origem = st.text_input("Origem do Ganho (Ex: Salário, Pix, Venda):", key="ganho_origem")
-    valor_ganho = st.number_input("Valor (R$):", min_value=0.0, key="ganho_valor")
-    data_ganho = st.date_input("Data do Recebimento:", value=hoje, key="ganho_data")
+    # Chaves atualizadas para evitar conflitos com a aba Editar
+    origem = st.text_input("Origem do Ganho (Ex: Salário, Pix, Venda):", key="novo_ganho_origem")
+    valor_ganho = st.number_input("Valor (R$):", min_value=0.0, key="novo_ganho_valor")
+    data_ganho = st.date_input("Data do Recebimento:", value=hoje, key="novo_ganho_data")
     
-    # UI inteligente: avisa o usuário se for previsão
     if data_ganho > hoje:
         st.info("📅 Como a data é no futuro, este valor entrará como 'Previsão' e só será somado ao Caixa Real no dia exato do recebimento.")
         
@@ -477,8 +479,8 @@ with aba_ganho:
             
             st.session_state.msg_sucesso_ganho = "✅ Ganho registrado com sucesso!"
             
-            # Limpeza instantânea
-            for chave in ["ganho_origem", "ganho_valor", "ganho_data", "ganho_quem"]:
+            # Rotina de limpeza atualizada com os novos nomes
+            for chave in ["novo_ganho_origem", "novo_ganho_valor", "novo_ganho_data", "novo_ganho_quem"]:
                 if chave in st.session_state:
                     del st.session_state[chave]
                     
