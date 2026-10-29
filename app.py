@@ -239,14 +239,13 @@ with aba_extrato:
     else:
         st.info("Nenhuma dívida neste período.")
 
-# --- ABA 3: NOVA DÍVIDA (INTERATIVA E COM RESET) ---
+# --- ABA 3: REGISTRAR SAÍDA (GASTOS IMEDIATOS OU DÍVIDAS) ---
 with aba_divida:
-    st.subheader("🧾 Registrar Dívida")
+    st.subheader("🧾 Registrar Saída")
     
-    # 1. Mostra a mensagem de sucesso que sobreviveu ao recarregamento da página
     if 'msg_sucesso_divida' in st.session_state:
         st.success(st.session_state.msg_sucesso_divida)
-        del st.session_state.msg_sucesso_divida # Apaga para não aparecer de novo
+        del st.session_state.msg_sucesso_divida
 
     def adicionar_meses(data_orig, meses):
         mes = data_orig.month - 1 + meses
@@ -255,22 +254,30 @@ with aba_divida:
         dia = min(data_orig.day, [31,29 if ano%4==0 and not ano%400==0 else 28,31,30,31,30,31,31,30,31,30,31][mes-1])
         return date(ano, mes, dia)
 
+    # --- NOVO: Seletor de Tipo de Gasto ---
+    tipo_gasto = st.radio(
+        "Tipo de Registro:", 
+        ["Gasto Imediato (Já pago no dia a dia)", "Conta a Pagar (Futura / Parcelada)"], 
+        horizontal=True, 
+        key="div_tipo_gasto"
+    )
+    st.divider()
+
     if usuario.get('perfil') == 'admin':
-        tipo_conta = st.radio("Conta:", ["Individual", "Compartilhada"], key="div_tipo")
-        quem_paga = st.selectbox("Quem fez a compra?", [p["nome"] for p in lista_dependentes], key="div_quem")
+        tipo_conta = st.radio("Divisão:", ["Individual", "Compartilhada"], key="div_tipo")
+        quem_paga = st.selectbox("De quem é a saída?", [p["nome"] for p in lista_dependentes], key="div_quem")
     else:
         tipo_conta = "Individual"
         quem_paga = usuario['nome']
-        st.info(f"Registando Dívida Individual para: **{quem_paga}**")
+        st.info(f"Registando saída para: **{quem_paga}**")
         
-    # Adicionamos 'key' aos inputs para podermos limpá-los depois
-    descricao = st.text_input("O que foi comprado?", key="div_desc")
-    valor_parcela = st.number_input("Valor Total da Parcela (R$):", min_value=0.0, key="div_val")
+    descricao = st.text_input("O que foi pago/comprado?", key="div_desc")
+    valor_parcela = st.number_input("Valor Total (R$):", min_value=0.0, key="div_val")
     
     divisoes = {}
     if tipo_conta == "Compartilhada":
         st.markdown("#### ⚖️ Divisão da Conta (%)")
-        st.caption("A soma de todos deve dar 100%. O sistema calculará os valores automaticamente.")
+        st.caption("A soma de todos deve dar 100%.")
         colunas_div = st.columns(len(lista_dependentes))
         pct_padrao = 100.0 / len(lista_dependentes) if len(lista_dependentes) > 0 else 100.0
         
@@ -278,17 +285,25 @@ with aba_divida:
             with colunas_div[idx]:
                 divisoes[p['id']] = st.number_input(f"{p['nome'][:6]}", min_value=0.0, max_value=100.0, value=pct_padrao, step=1.0, key=f"div_pct_{p['id']}")
                 
-    col_data1, col_data2 = st.columns(2)
-    with col_data1: is_parcelado = st.checkbox("É parcelado?", key="div_parc")
-    with col_data2: 
-        if is_parcelado:
-            qtd_parcelas = st.number_input("Vezes:", min_value=2, value=2, key="div_qtd")
-        else:
-            qtd_parcelas = 1
-            
-    data_vencimento = st.date_input("Vencimento 1ª Parcela:", value=hoje, key="div_venc")
+    # --- LÓGICA CONDICIONAL DO FORMULÁRIO ---
+    if tipo_gasto == "Conta a Pagar (Futura / Parcelada)":
+        col_data1, col_data2 = st.columns(2)
+        with col_data1: is_parcelado = st.checkbox("É parcelado?", key="div_parc")
+        with col_data2: 
+            if is_parcelado:
+                qtd_parcelas = st.number_input("Vezes:", min_value=2, value=2, key="div_qtd")
+            else:
+                qtd_parcelas = 1
+        data_vencimento = st.date_input("Vencimento 1ª Parcela:", value=hoje, key="div_venc")
+        status_registro = "Pendente"
+    else:
+        # Modo Gasto Imediato: Esconde parcelas e datas, assume Hoje e Pago.
+        qtd_parcelas = 1
+        data_vencimento = hoje
+        status_registro = "Pago"
+        st.info("💡 Como é um gasto imediato (ex: almoço, padaria), o sistema salvará com a data de hoje e status já constará como 'Pago' automaticamente.")
     
-    if st.button("Salvar Conta", type="primary"):
+    if st.button("Salvar Registro", type="primary"):
         if tipo_conta == "Compartilhada" and abs(sum(divisoes.values()) - 100.0) > 0.1:
             st.error(f"❌ A soma das porcentagens deve ser 100%! Atualmente está em {sum(divisoes.values()):.1f}%.")
         elif not descricao or valor_parcela <= 0:
@@ -300,28 +315,27 @@ with aba_divida:
                 venc = adicionar_meses(data_vencimento, i)
                 mes_ref = f"{venc.month:02d}/{venc.year}"
                 
+                # Deixa a descrição limpa se não for parcelado
+                desc_final = f"{descricao} ({i+1}/{qtd_parcelas})" if qtd_parcelas > 1 else descricao
+                
                 if tipo_conta == "Individual":
-                    pacote.append({"dependente_id": id_pessoa, "descricao": f"{descricao} ({i+1}/{qtd_parcelas})", "valor": valor_parcela, "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": "Pendente"})
+                    pacote.append({"dependente_id": id_pessoa, "descricao": desc_final, "valor": valor_parcela, "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": status_registro})
                 elif tipo_conta == "Compartilhada":
+                    desc_comp = f"{desc_final} - Comp."
                     for p_id, pct in divisoes.items():
                         if pct > 0:
-                            pacote.append({"dependente_id": p_id, "descricao": f"{descricao} - Comp. ({i+1}/{qtd_parcelas})", "valor": round(valor_parcela * (pct / 100.0), 2), "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": "Pendente"})
+                            pacote.append({"dependente_id": p_id, "descricao": desc_comp, "valor": round(valor_parcela * (pct / 100.0), 2), "mes": mes_ref, "data_vencimento": venc.isoformat(), "status": status_registro})
                             
-            # 1. Guarda no banco
             supabase.table("acertos_cartao").insert(pacote).execute()
             
-            # 2. Guarda a mensagem na memória para mostrar após o reset
-            st.session_state.msg_sucesso_divida = "✅ Conta salva com sucesso!"
+            # Mensagem inteligente baseada no tipo escolhido
+            st.session_state.msg_sucesso_divida = f"✅ {'Gasto imediato registrado' if status_registro == 'Pago' else 'Conta a pagar salva'} com sucesso!"
             
-            # 3. Força a limpeza de todos os campos digitados
-            chaves_para_limpar = ["div_desc", "div_val", "div_parc", "div_qtd", "div_venc", "div_tipo", "div_quem"]
+            chaves_para_limpar = ["div_desc", "div_val", "div_parc", "div_qtd", "div_venc", "div_tipo", "div_quem", "div_tipo_gasto"]
             for p in lista_dependentes: chaves_para_limpar.append(f"div_pct_{p['id']}")
-            
             for chave in chaves_para_limpar:
-                if chave in st.session_state:
-                    del st.session_state[chave]
+                if chave in st.session_state: del st.session_state[chave]
                     
-            # 4. Recarrega a tela de forma limpa
             st.rerun()
 
 # --- ABA 4: NOVO GANHO ---
@@ -400,13 +414,15 @@ if usuario.get('perfil') == 'admin':
         with sub_d:
             if todas_contas:
                 with st.form("form_edit_d"):
-                    # Agora puxa todas_contas para permitir apagar até as que já foram pagas
                     d_sel = st.selectbox("Selecione a Conta:", todas_contas, format_func=lambda c: f"{id_para_nome.get(c['dependente_id'])} | {c['descricao']} | R$ {c['valor']} | Status: {c['status']}")
                     
                     n_desc = st.text_input("Descrição:", value=d_sel['descricao'])
                     n_val = st.number_input("Valor (R$):", min_value=0.0, value=float(d_sel['valor']))
                     
-                    # Proteção para datas nulas
+                    # --- NOVO: Campo para alterar o Status diretamente ---
+                    status_atual = d_sel.get('status', 'Pendente')
+                    n_status = st.selectbox("Status:", ["Pendente", "Pago"], index=0 if status_atual == 'Pendente' else 1)
+                    
                     venc_atual = d_sel.get('data_vencimento')
                     data_padrao = datetime.strptime(venc_atual[:10], '%Y-%m-%d').date() if venc_atual else hoje
                     n_venc = st.date_input("Vencimento:", value=data_padrao)
@@ -418,7 +434,14 @@ if usuario.get('perfil') == 'admin':
                         btn_excluir = st.form_submit_button("❌ Excluir Conta", use_container_width=True)
                         
                     if btn_atualizar:
-                        supabase.table("acertos_cartao").update({"descricao": n_desc, "valor": n_val, "data_vencimento": n_venc.isoformat()}).eq("id", d_sel['id']).execute()
+                        # O n_status foi adicionado na atualização do banco
+                        supabase.table("acertos_cartao").update({
+                            "descricao": n_desc, 
+                            "valor": n_val, 
+                            "status": n_status, 
+                            "data_vencimento": n_venc.isoformat()
+                        }).eq("id", d_sel['id']).execute()
+                        
                         st.success("Conta atualizada com sucesso!")
                         st.rerun()
                     elif btn_excluir:
@@ -427,60 +450,3 @@ if usuario.get('perfil') == 'admin':
                         st.rerun()
             else: 
                 st.info("Nenhuma dívida registada para editar.")
-                
-        with sub_g:
-            if lista_ganhos:
-                with st.form("form_edit_g"):
-                    g_sel = st.selectbox("Selecione o Ganho:", lista_ganhos, format_func=lambda g: f"{id_para_nome.get(g['dependente_id'])} | {g['descricao']} | R$ {g['valor']}")
-                    
-                    n_desc_g = st.text_input("Descrição:", value=g_sel['descricao'])
-                    n_val_g = st.number_input("Valor (R$):", min_value=0.0, value=float(g_sel['valor']))
-                    
-                    reg_atual = g_sel.get('data_recebimento') or g_sel.get('data_registro')
-                    data_padrao_g = datetime.strptime(reg_atual[:10], '%Y-%m-%d').date() if reg_atual else hoje
-                    n_venc_g = st.date_input("Previsto para:", value=data_padrao_g)
-                    
-                    col_btn3, col_btn4 = st.columns(2)
-                    with col_btn3:
-                        btn_atualizar_g = st.form_submit_button("Atualizar Ganho", type="primary", use_container_width=True)
-                    with col_btn4:
-                        btn_excluir_g = st.form_submit_button("❌ Excluir Ganho", use_container_width=True)
-                        
-                    if btn_atualizar_g:
-                        supabase.table("ganhos").update({"descricao": n_desc_g, "valor": n_val_g, "data_recebimento": n_venc_g.isoformat()}).eq("id", g_sel['id']).execute()
-                        st.success("Ganho atualizado com sucesso!")
-                        st.rerun()
-                    elif btn_excluir_g:
-                        supabase.table("ganhos").delete().eq("id", g_sel['id']).execute()
-                        st.warning("Ganho excluído permanentemente!")
-                        st.rerun()
-            else: 
-                st.info("Nenhum ganho registado para editar.")
-
-    with aba_familia:
-        st.subheader("👨‍👩‍👧 Gerenciar Acessos")
-        s_add, s_edit, s_rem = st.tabs(["➕ Add", "✏️ Edit", "❌ Remover"])
-        with s_add:
-            with st.form("f_add"):
-                if st.form_submit_button("Salvar Novo") and (n:=st.text_input("Nome:")):
-                    supabase.table("dependentes").insert({"nome": n, "senha": "123456", "perfil": "usuario"}).execute()
-                    st.success("Adicionado!"); st.rerun()
-        with s_edit:
-            with st.form("f_edit"):
-                m_sel = st.selectbox("Pessoa:", lista_dependentes, format_func=lambda x: x['nome'])
-                novo_nome = st.text_input("Novo nome:", value=m_sel['nome'] if m_sel else "")
-                nova_senha = st.text_input("Redefinir senha (em branco para não mudar):")
-                if st.form_submit_button("Atualizar"):
-                    upd = {"nome": novo_nome}
-                    if nova_senha: upd["senha"] = nova_senha
-                    supabase.table("dependentes").update(upd).eq("id", m_sel['id']).execute()
-                    st.success("Atualizado!"); st.rerun()
-        with s_rem:
-            with st.form("f_rem"):
-                m_rem = st.selectbox("Remover:", lista_dependentes, format_func=lambda x: x['nome'])
-                st.warning("⚠️ Só remove se não tiver histórico.")
-                if st.form_submit_button("Remover"):
-                    try:
-                        supabase.table("dependentes").delete().eq("id", m_rem['id']).execute()
-                        st.success("Removido!"); st.rerun()
-                    except: st.error("Erro: Pessoa possui registos.")
