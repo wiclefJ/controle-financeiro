@@ -207,6 +207,41 @@ with aba_dash:
             if st.button("Ver Extrato", key=f"btn_detalhes_{id_pessoa}", use_container_width=True):
                 mostrar_detalhes(id_pessoa, nome, data_inicio, data_fim)
 
+    st.divider()
+
+    # =======================================================
+    # 3. TERMÔMETRO DO ORÇAMENTO (Meta Familiar do Mês)
+    # =======================================================
+    # Busca a meta do Supabase (lê a primeira linha da tabela configuracoes)
+    try:
+        req_meta = supabase.table("configuracoes").select("meta_mensal").execute()
+        meta_familia = float(req_meta.data[0]['meta_mensal']) if req_meta.data else 5000.0
+    except:
+        meta_familia = 5000.0 # Valor de segurança se a tabela não existir ainda
+        
+    # Soma todas as contas pagas E pendentes do período filtrado
+    total_gasto_mes = sum(c['valor'] for c in contas_filtradas) + sum(c['valor'] for c in todas_contas if c['status'] == 'Pago' and c.get('data_vencimento') and data_inicio <= datetime.strptime(c['data_vencimento'][:10], '%Y-%m-%d').date() <= data_fim)
+    # Calcula a porcentagem consumida, travando em 1.0 (100%) para a barra não quebrar o layout
+    pct_consumida = total_gasto_mes / meta_familia if meta_familia > 0 else 0
+    pct_barra = min(pct_consumida, 1.0)
+    
+    st.markdown("<h4>🎯 Termômetro de Gastos da Família</h4>", unsafe_allow_html=True)
+    
+    # Alertas visuais de cor baseados na porcentagem
+    if pct_consumida >= 1.0:
+        st.error(f"🚨 Orçamento Estourado! Vocês já comprometeram R$ {total_gasto_mes:.2f} da meta de R$ {meta_familia:.2f} ({pct_consumida*100:.1f}%)")
+    elif pct_consumida >= 0.8:
+        st.warning(f"⚠️ Atenção! Vocês já consumiram {pct_consumida*100:.1f}% da meta mensal. Faltam apenas R$ {meta_familia - total_gasto_mes:.2f} para o teto.")
+    else:
+        st.success(f"✅ Orçamento Saudável. Vocês consumiram {pct_consumida*100:.1f}% do teto de R$ {meta_familia:.2f}.")
+        
+    st.progress(pct_barra)
+    st.divider()
+    
+    # (O código 2. RESUMO DO PERÍODO que você colou na tarefa anterior continua AQUI embaixo)
+    str_inicio = data_inicio.strftime('%d/%m/%Y')
+    # ... resto do código ...
+
 # --- ABA 2: EXTRATO COMPLETO (COM PROTEÇÃO DE NULOS) ---
 with aba_extrato:
     st.subheader("📄 Extrato Financeiro")
@@ -441,7 +476,7 @@ with aba_perfil:
 if usuario.get('perfil') == 'admin':
     with aba_editar:
         st.subheader("✏️ Editar ou Excluir Histórico")
-        sub_d, sub_g = st.tabs(["🔴 Dívidas", "🟢 Ganhos"])
+        sub_d, sub_g, sub_opt = st.tabs(["🔴 Dívidas", "🟢 Ganhos", "⚙️ Opções"])
         
         with sub_d:
             if todas_contas:
@@ -482,3 +517,21 @@ if usuario.get('perfil') == 'admin':
                         st.rerun()
             else: 
                 st.info("Nenhuma dívida registada para editar.")
+
+        # --- NOVO: Aba de Opções para o Admin mudar a Meta ---
+        with sub_opt:
+            st.write("Configurações Globais do Sistema")
+            with st.form("form_meta"):
+                try:
+                    meta_atual = float(supabase.table("configuracoes").select("meta_mensal").execute().data[0]['meta_mensal'])
+                except:
+                    meta_atual = 5000.0
+                    
+                nova_meta = st.number_input("Teto de Gastos Mensal da Família (R$):", min_value=0.0, value=meta_atual)
+                
+                if st.form_submit_button("Atualizar Meta"):
+                    # O Supabase usa eq('id', 1) assumindo que você criou a primeira linha
+                    supabase.table("configuracoes").update({"meta_mensal": nova_meta}).eq("id", 1).execute()
+                    st.success("Teto de gastos atualizado!")
+                    st.rerun()
+
