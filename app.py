@@ -158,21 +158,53 @@ with aba_dash:
     if len(contas_atrasadas) > 0:
         st.error(f"⚠️ Atenção! Existem {len(contas_atrasadas)} conta(s) em atraso pendentes para você!")
 
+    # =======================================================
+    # 1. SALDO GLOBAL ABSOLUTO (Livre do Filtro de Datas)
+    # =======================================================
+    st.markdown("<h3><i class='fa-solid fa-building-columns'></i> Caixa Real (Saldo Global)</h3>", unsafe_allow_html=True)
+    st.caption("Dinheiro disponível hoje (Soma de todos os Ganhos - Todas as contas Pagas/Gastos Imediatos).")
+    
+    col_globais = st.columns(len(dependentes_ativos))
+    for index, pessoa in enumerate(dependentes_ativos):
+        id_p = pessoa['id']
+        
+        # Puxa do histórico total (ignorando as datas da barra lateral)
+        ganhos_totais = sum(g['valor'] for g in lista_ganhos if g['dependente_id'] == id_p)
+        pagos_totais = sum(c['valor'] for c in todas_contas if c['dependente_id'] == id_p and c['status'] == 'Pago')
+        
+        saldo_real = ganhos_totais - pagos_totais
+        
+        with col_globais[index]:
+            st.metric(
+                label=f"💰 {pessoa['nome']}", 
+                value=f"R$ {saldo_real:.2f}", 
+                delta=f"Entrou: {ganhos_totais:.2f} | Saiu: {pagos_totais:.2f}", 
+                delta_color="off"
+            )
+            
+    st.divider()
+
+    # =======================================================
+    # 2. RESUMO DO PERÍODO (Afetado pelo Filtro de Datas)
+    # =======================================================
     str_inicio = data_inicio.strftime('%d/%m/%Y')
     str_fim = data_fim.strftime('%d/%m/%Y')
-    st.markdown(f"<h3><i class='fa-solid fa-chart-pie'></i> Resumo <span style='font-size: 0.6em; color: gray;'><i class='fa-regular fa-calendar-days'></i> {str_inicio} a {str_fim}</span></h3>", unsafe_allow_html=True)
+    st.markdown(f"<h4><i class='fa-solid fa-file-invoice-dollar'></i> A Pagar no Período <span style='font-size: 0.6em; color: gray;'><i class='fa-regular fa-calendar-days'></i> {str_inicio} a {str_fim}</span></h4>", unsafe_allow_html=True)
+    st.caption("Dívidas pendentes apenas dentro das datas filtradas no menu lateral.")
     
     colunas_metricas = st.columns(len(dependentes_ativos))
     for index, pessoa in enumerate(dependentes_ativos):
         nome = pessoa['nome']
         id_pessoa = pessoa['id']
-        devedor = saldos_devedores[id_pessoa]
-        ganho = recebimentos.get(nome, 0.0) 
-        saldo_livre = ganho - devedor
+        
+        # Usa as variáveis filtradas para mostrar só as contas do mês atual
+        devedor = saldos_devedores[id_pessoa] 
         
         with colunas_metricas[index]:
-            st.metric(label=f"{nome} | Saldo: R$ {saldo_livre:.2f}", value=f"R$ {ganho:.2f}", delta=f"- R$ {devedor:.2f} em dívidas", delta_color="normal")
-            if st.button("Ver Detalhes", key=f"btn_detalhes_{id_pessoa}", use_container_width=True):
+            st.metric(label=f"🔴 Pendente ({nome})", value=f"R$ {devedor:.2f}", delta="Dívidas do mês", delta_color="inverse")
+            
+            # O botão da janela Modal continua a funcionar perfeitamente
+            if st.button("Ver Extrato", key=f"btn_detalhes_{id_pessoa}", use_container_width=True):
                 mostrar_detalhes(id_pessoa, nome, data_inicio, data_fim)
 
 # --- ABA 2: EXTRATO COMPLETO (COM PROTEÇÃO DE NULOS) ---
