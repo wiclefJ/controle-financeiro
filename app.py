@@ -238,9 +238,28 @@ with aba_dash:
     st.progress(pct_barra)
     st.divider()
     
-    # (O código 2. RESUMO DO PERÍODO que você colou na tarefa anterior continua AQUI embaixo)
     str_inicio = data_inicio.strftime('%d/%m/%Y')
-    # ... resto do código ...
+    
+# =======================================================
+    # 4. RAIO-X: COMPOSIÇÃO DOS GASTOS
+    # =======================================================
+    # Junta todas as contas do mês (pendentes e pagas filtradas anteriormente) para analisar o bolo total
+    todas_contas_mes = [c for c in contas_filtradas] + [c for c in todas_contas if c['status'] == 'Pago' and c.get('data_vencimento') and data_inicio <= datetime.strptime(c['data_vencimento'][:10], '%Y-%m-%d').date() <= data_fim]
+    
+    # Filtra pelo 'carimbo' que criámos na descrição da conta
+    gasto_casa = sum(c['valor'] for c in todas_contas_mes if "- Comp." in c['descricao'])
+    gasto_individual = sum(c['valor'] for c in todas_contas_mes if "- Comp." not in c['descricao'])
+    
+    st.write("") # Espaço em branco para deixar o layout respirar
+    col_rx1, col_rx2 = st.columns(2)
+    
+    with col_rx1:
+        pct_casa = (gasto_casa / total_gasto_mes * 100) if total_gasto_mes > 0 else 0
+        st.markdown(f"**🏢 Despesas da Casa:** R$ {gasto_casa:.2f} <span style='color: gray; font-size: 0.9em;'>( {pct_casa:.1f}% )</span>", unsafe_allow_html=True)
+        
+    with col_rx2:
+        pct_ind = (gasto_individual / total_gasto_mes * 100) if total_gasto_mes > 0 else 0
+        st.markdown(f"**👤 Gastos Individuais:** R$ {gasto_individual:.2f} <span style='color: gray; font-size: 0.9em;'>( {pct_ind:.1f}% )</span>", unsafe_allow_html=True)
 
 # --- ABA 2: EXTRATO COMPLETO (COM PROTEÇÃO DE NULOS) ---
 with aba_extrato:
